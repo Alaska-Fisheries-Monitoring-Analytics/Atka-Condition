@@ -187,40 +187,291 @@ df_spp_fshry_length_wts %>%
 # AKFIN connection ----
 
 # Connect to AKFIN for debriefed data
-
-
+db <- "akfin"
+obj_channel <- dbConnect(odbc(),
+                         db,
+                         UID    = keyring::key_list(db)$username,
+                         PWD    = keyring::key_get(db, keyring::key_list(db)$username))
 
 # Debriefed average weights ----
 
+# de-prioritized
+
+# Debriefed weight-length pairs ----
+
 # flat version
-
-
 debriefed_specimen <- 
   dbGetQuery(obj_channel, 
              paste0(
-               "select   year, nmfs_area, gear, species,
+               "select   year, haul_join, cruise, permit, nmfs_area, gear, species,
                           length, weight, age, maturity_code, maturity_description,
-                          sex, bottom_depth_fathoms, haul_offload_date,
-                          performance
+                          sex, bottom_depth_fathoms, 
+                          performance, londd_start, latdd_start,
+                          haul_offload_date, deployment_trip_start_date
                  from     norpac.debriefed_age_flat_mv
-                 where    species in '204'"
+                 where    species in '204' and 
+                          nmfs_area in ('541', '542', '543', '518') and
+                          weight > 0
+                    "
              ))
+debriefed_specimen %>% filter(!is.na(LONDD_START)) %>% select(LONDD_START, LATDD_START)
+ins %>% select(deployment_longitude, deployment_longitude_converted, e_w)
+sort(names(ins))
+cn[grepl('target',cn)]
+tbl(obj_channel,sql('norpac.debriefed_age_flat_mv')) %>% rename_all(tolower) %>% colnames ->cn
+debriefed_specimen %>% 
+  rename_all(tolower) %>% 
+  readr::write_csv('data/debriefed_wtlen.csv')
 
 # NMFS area look up 
-query <- "select  distinct  fmp_area as fmp, fmp_subarea, 
-                            reporting_area_code as nmfs_area
-          from              council.comprehensive_blend_ca"
+# query <- "select  distinct  fmp_area as fmp, fmp_subarea, 
+#                             reporting_area_code as nmfs_area
+#           from              council.comprehensive_blend_ca"
+# 
+# nmfs_area_lookup <- dbGetQuery(obj_channel, query) %>% rename_all(tolower)
+# nmfs_area_lookup <- nmfs_area_lookup[complete.cases(nmfs_area_lookup),]
+# fsh %>% 
+#   rename_all(tolower) %>%
+#   mutate(nmfs_area = as.character(nmfs_area)) %>% 
+#   left_join(nmfs_area_lookup)  %>% 
+  
+# Condition analysis -----
 
-nmfs_area_lookup <- sqlQuery(channel_akfin, query) %>% rename_all(tolower)
-nmfs_area_lookup <- nmfs_area_lookup[complete.cases(nmfs_area_lookup),]
-fsh %>% 
-  rename_all(tolower) %>%
-  mutate(nmfs_area = as.character(nmfs_area)) %>% 
-  left_join(nmfs_area_lookup)  %>% 
-  write_csv(paste0(dat_path, "/atka_debriefed_conf.csv"))
-# Debriefed weight-length pairs ----
+rm(list=ls())
+
+ins <- read_csv('data/inseason_wtlen.csv', guess_max = 1500)
+deb <- read_csv('data/debriefed_wtlen.csv')
+colnames(ins)[grepl('weig', colnames(ins))]
+table(ins$management_program_code)
+table(ins$target_fishery_description)
+table(ins$nmfs_area)
+
+# processor size grade categories
+# 2L:  850-999 g
+# L:  750-849 g
+# M:  650-749 g
+# S:  550-649 g
+# 2S:  450-549 g *
+# 3S:  360-449 g *
+# 4S:  300-359 g *
+# 5S:  240-299 g *
+# 6S:  180-239 g
+# 7S:  110-179 g
+
+df <- ins %>% 
+  filter(management_program_code == "A80" &
+           target_fishery_description == "Atka mackerel" &
+           nmfs_area %in% c(541, 542, 543) &
+           year > 2010) %>% 
+  mutate(
+    # # detailed by grade
+    # sizegrade = case_when(weight >= 0.45 ~ "2S+ (>=450 g)",
+    #                       weight < 0.45 & weight >= 0.36 ~ "3S (360-449 g)",
+    #                       weight < 0.36 & weight >= 0.30 ~ "4S (300-359 g)",
+    #                       weight <= 0.29 ~ "5S- (<= 299 g)"),
+    # # sm med lg
+    # sizegrade = case_when(weight >= 0.45 ~ "2S+ (>=450 g)",
+    #                       weight < 0.45 & weight >= 0.30 ~ "3S and 4S (300-449 g)",
+    #                       weight <= 0.29 ~ "5S- (<= 299 g)"),
+    # sm lg
+    sizegrade = case_when(weight >= 0.45 ~ "2S+ (>=450 g)",
+                          weight < 0.45 ~ "3S- (<450 g)"),
+         condition_stratum = NA, area_biomass = 1,
+         julian = lubridate::yday(haul_date),
+         common_name = paste0("Atka in area ", nmfs_area, ": ", sizegrade),
+         species_code = as.integer(as.factor(common_name)))
+
+(maxday <- df %>% 
+    filter(year == 2024 & haul_date == max(haul_date)) %>%
+    distinct(julian, haul_date) %>% 
+    pull(julian))
+
+# Make sure all fish are from a comparable time period
+dfs <- df %>% filter(julian <= maxday) # %>% nrow
+
+# check sample sizes, set minimum threshold
+dfs %>% 
+  dplyr::count(species_code, nmfs_area,year) %>% 
+    tidyr::pivot_wider(id_cols = year, names_from = species_code, values_from = n, values_fill = 0)# %>% 
+    # View()
+
+minn <- 25
+dfs <- dfs %>% group_by(common_name, year) %>% filter(n() >= minn) %>% ungroup()
+
+ggplot(dfs, aes(x = log(length), y = log(weight), col = factor(year))) +
+  geom_point() + 
+  geom_smooth(method = 'lm') + 
+  facet_wrap(~common_name, ncol = 2) 
+
+(opts <- unique(dfs$species_code))
+
+# Calculate length weight residuals -----
+for(i in 1:length(opts)) {
+  
+  # Separate slope for each stratum. Bias correction according to Brodziak, no outlier detection.
+  atka_df <- akfishcondition::calc_lw_residuals(len = dfs$length[dfs$species_code == opts[i]], 
+                                wt = dfs$weight[dfs$species_code == opts[i]], 
+                                year = dfs$year[dfs$species_code == opts[i]], 
+                                stratum = dfs$condition_stratum[dfs$species_code == opts[i]], 
+                                make_diagnostics = TRUE, # Make diagnostics
+                                bias.correction = TRUE, # Bias correction turned on
+                                outlier.rm = FALSE, # Outlier removal turned on
+                                region = "AI", 
+                                species_code = dfs$species_code[dfs$species_code == opts[i]],
+                                include_ci = TRUE)
+  dfs$resid_mean[dfs$species_code == opts[i]] <- atka_df$lw.res_mean
+  dfs$resid_lwr[dfs$species_code == opts[i]] <- atka_df$lw.res_lwr
+  dfs$resid_upr[dfs$species_code == opts[i]] <- atka_df$lw.res_upr
+  
+}
+
+# Estimate mean and std. err for each stratum, filter out strata with less than 10 samples
+atka_resids <- dfs %>% 
+  dplyr::group_by(common_name, species_code, year, condition_stratum, area_biomass) %>% 
+  dplyr::summarise(stratum_resid_mean = mean(resid_mean),
+                   stratum_resid_sd = sd(resid_mean),
+                   n = n()) %>%
+  dplyr::filter(n >= 10) %>%
+  dplyr::mutate(stratum_resid_se = stratum_resid_sd/sqrt(n))
+
+# Weight strata by biomass 
+for(i in 1:length(opts)) {
+  
+  atka_resids$weighted_resid_mean[atka_resids$species_code == opts[i]] <- akfishcondition::weight_lw_residuals(
+    residuals = atka_resids$stratum_resid_mean[atka_resids$species_code == opts[i]],
+    year = atka_resids$year[atka_resids$species_code == opts[i]],
+    # stratum = rep("no_strata", nrow(atka_resids)),
+    stratum = atka_resids$condition_stratum[atka_resids$species_code == opts[i]],
+    stratum_biomass = atka_resids$area_biomass[atka_resids$species_code == opts[i]])
+  
+  atka_resids$weighted_resid_se[atka_resids$species_code == opts[i]] <- akfishcondition::weight_lw_residuals(
+    residuals = atka_resids$stratum_resid_se[atka_resids$species_code == opts[i]],
+    year = atka_resids$year[atka_resids$species_code == opts[i]],
+    # stratum = rep("no_strata", nrow(atka_resids)),
+    stratum = atka_resids$condition_stratum[atka_resids$species_code == opts[i]],
+    stratum_biomass = atka_resids$area_biomass[atka_resids$species_code == opts[i]])
+}
+
+# Biomass-weighted residual and SE by year
+atka_ann_mean_resid_df <- atka_resids %>% 
+  dplyr::group_by(year, common_name) %>%
+  dplyr::summarise(mean_wt_resid = mean(weighted_resid_mean),
+                   se_wt_resid = mean(weighted_resid_se))
+
+# Plot
+
+atka_ann_mean_resid_df %>% 
+  filter(grepl("2S+", common_name)) %>% 
+  ggplot() + 
+  geom_bar(aes(x = year, 
+               y = mean_wt_resid), 
+           stat = "identity", 
+           fill = "plum", 
+           color = "black") +
+  geom_errorbar(aes(x = year, 
+                    ymax = mean_wt_resid + 1.96 * se_wt_resid,
+                    ymin = mean_wt_resid - 1.96 * se_wt_resid),
+                width = 0.2) +
+  geom_hline(yintercept = 0) +
+  facet_wrap(~common_name, ncol = 1) + 
+  scale_x_continuous(name = "Year") +
+  scale_y_continuous(name = "Length-weight residual (ln(g))") +
+  theme_minimal(base_size = 13) +
+  ggtitle("Condition of spring large (>= 450 g) Atka mackerel\n")
+
+ggsave(paste0("output/large_atka_condition.png"),
+       width = 6, height = 7, units = "in", bg = 'white')
+
+atka_ann_mean_resid_df %>% 
+  filter(grepl("3S-", common_name)) %>% 
+  ggplot() + 
+  geom_bar(aes(x = year, 
+               y = mean_wt_resid), 
+           stat = "identity", 
+           fill = "plum", 
+           color = "black") +
+  geom_errorbar(aes(x = year, 
+                    ymax = mean_wt_resid + 1.96 * se_wt_resid,
+                    ymin = mean_wt_resid - 1.96 * se_wt_resid),
+                width = 0.2) +
+  geom_hline(yintercept = 0) +
+  facet_wrap(~common_name, ncol = 1) + 
+  scale_x_continuous(name = "Year") +
+  scale_y_continuous(name = "Length-weight residual (ln(g))") +
+  theme_minimal(base_size = 13) +
+  ggtitle("Condition of spring small (< 450 g) Atka mackerel\n")
+
+ggsave(paste0("output/small_atka_condition.png"),
+       width = 6, height = 7, units = "in", bg = 'white')
+
+# Avg weights ----
+
+df_spp_fshry_samples <- read_csv('data/inseason_avg_wts.csv') 
+names(df_spp_fshry_samples)
+
+# Boxplot function definition---------------------------------------------------
+
+fn_boxplot <- 
+  function(in_df, in_y_lab) { 
+    ggplot(data = in_df,
+           aes(x = as.factor(year),
+               y = y_val) ) +
+      geom_boxplot() +
+      labs(x     = '',
+           y     = in_y_lab,
+           title = in_species_name) +
+      theme_bw() + 
+      theme(strip.text.y.right = element_text(angle = 0))
+  }
 
 
-#########################
+#######################
+# Boxplots for Weight Per Fish from species comp samples -----------------------
 
+# 1. For all data
+plot_bx_wt_per_fish_all <- (fn_boxplot(in_df    = df_spp_fshry_samples %>%
+                                         mutate(Y_VAL = SPECIES_WEIGHT/SPECIES_NUMBER),
+                                       in_y_lab = 'Weight per fish (kg)') )
+plot_bx_wt_per_fish_all
+
+
+# 2. Faceted by "broad" region
+plot_bx_wt_per_fish_broad_region <-
+  (fn_boxplot(in_df = df_spp_fshry_samples %>%
+                mutate(Y_VAL = SPECIES_WEIGHT/SPECIES_NUMBER),
+              in_y_lab = 'Weight per fish (kg)')  +
+     facet_grid(GENERAL_REGION ~.)
+  ) 
+plot_bx_wt_per_fish_broad_region
+
+
+
+# 3. Faceted by NMFS region
+plot_bx_wt_per_fish_NMFS_region <-
+  (fn_boxplot(in_df = df_spp_fshry_samples %>%
+                mutate(Y_VAL = SPECIES_WEIGHT/SPECIES_NUMBER),
+              in_y_lab = 'Weight per fish (kg)')  +
+     facet_grid(NMFS_REGION ~.)
+  ) 
+plot_bx_wt_per_fish_NMFS_region
+
+
+
+# 4. Faceted by Target Fishery
+plot_bx_wt_per_tgt_fshry <-
+  (fn_boxplot(in_df = df_spp_fshry_samples %>%
+                mutate(Y_VAL = SPECIES_WEIGHT/SPECIES_NUMBER),
+              in_y_lab = 'Weight per fish (kg)')  +
+     facet_grid(TARGET_FISHERY_DESCRIPTION ~.)
+  )  
+plot_bx_wt_per_tgt_fshry
+
+# 5. Faceted by Management Program
+plot_bx_wt_per_mgmt_pgm <-
+  (fn_boxplot(in_df = df_spp_fshry_samples %>%
+                mutate(Y_VAL = SPECIES_WEIGHT/SPECIES_NUMBER),
+              in_y_lab = 'Weight per fish (kg)')  +
+     facet_grid(MANAGEMENT_PROGRAM_CODE ~.)
+  ) 
+plot_bx_wt_per_mgmt_pgm
 
