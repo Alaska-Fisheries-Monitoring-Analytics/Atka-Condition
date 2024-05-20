@@ -406,8 +406,24 @@ ggsave(paste0("output/small_atka_condition.png"),
 
 # Avg weights ----
 
-df_spp_fshry_samples <- read_csv('data/inseason_avg_wts.csv') 
-names(df_spp_fshry_samples)
+df <- read_csv('data/inseason_avg_wts.csv') 
+names(df)
+
+df <- df %>% 
+  filter(management_program_code == "A80" &
+         target_fishery_description == "Atka mackerel" &
+         nmfs_area %in% c(541, 542, 543)) %>% 
+  mutate(julian = lubridate::yday(haul_date),
+         month = lubridate::month(haul_date))
+
+(maxday <- df %>% 
+    filter(year == 2024 & haul_date == max(haul_date)) %>%
+    distinct(julian, haul_date) %>% 
+    pull(julian))
+
+# Make sure all fish are from a comparable time period
+dfs <- df %>% filter(julian <= maxday) # %>% nrow
+
 
 # Boxplot function definition---------------------------------------------------
 
@@ -420,7 +436,7 @@ fn_boxplot <-
       labs(x     = '',
            y     = in_y_lab,
            title = in_species_name) +
-      theme_bw() + 
+      theme_bw(base_size = 20) + 
       theme(strip.text.y.right = element_text(angle = 0))
   }
 
@@ -429,49 +445,108 @@ fn_boxplot <-
 # Boxplots for Weight Per Fish from species comp samples -----------------------
 
 # 1. For all data
-plot_bx_wt_per_fish_all <- (fn_boxplot(in_df    = df_spp_fshry_samples %>%
-                                         mutate(Y_VAL = SPECIES_WEIGHT/SPECIES_NUMBER),
-                                       in_y_lab = 'Weight per fish (kg)') )
-plot_bx_wt_per_fish_all
+# plot_bx_wt_per_fish_all <- (fn_boxplot(in_df    = dfs %>%
+#                                          mutate(y_val = species_weight/species_number),
+#                                        in_y_lab = 'Weight per fish (kg)') )
+# plot_bx_wt_per_fish_all
 
-
-# 2. Faceted by "broad" region
-plot_bx_wt_per_fish_broad_region <-
-  (fn_boxplot(in_df = df_spp_fshry_samples %>%
-                mutate(Y_VAL = SPECIES_WEIGHT/SPECIES_NUMBER),
+# 2. AI wide
+plot_bx_wt_per_fish_region <-
+  (fn_boxplot(in_df = dfs %>%
+                mutate(y_val = species_weight/species_number),
               in_y_lab = 'Weight per fish (kg)')  +
-     facet_grid(GENERAL_REGION ~.)
+     facet_grid(~nmfs_region)
   ) 
-plot_bx_wt_per_fish_broad_region
+plot_bx_wt_per_fish_region
+
+ggsave(paste0("output/atka_avg_wt_ai.png"),
+       width = 6, height = 4, units = "in", bg = 'white')
 
 
-
-# 3. Faceted by NMFS region
-plot_bx_wt_per_fish_NMFS_region <-
-  (fn_boxplot(in_df = df_spp_fshry_samples %>%
-                mutate(Y_VAL = SPECIES_WEIGHT/SPECIES_NUMBER),
+# 3. Faceted by NMFS area
+plot_bx_wt_per_fish_nmfs_region <-
+  (fn_boxplot(in_df = dfs %>%
+                mutate(y_val = species_weight/species_number),
               in_y_lab = 'Weight per fish (kg)')  +
-     facet_grid(NMFS_REGION ~.)
+     facet_grid(~nmfs_area)
   ) 
-plot_bx_wt_per_fish_NMFS_region
+plot_bx_wt_per_fish_nmfs_region +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 
+ggsave(paste0("output/atka_avg_wt_by_area.png"),
+       width = 12, height = 6, units = "in", bg = 'white')
 
 
 # 4. Faceted by Target Fishery
-plot_bx_wt_per_tgt_fshry <-
-  (fn_boxplot(in_df = df_spp_fshry_samples %>%
-                mutate(Y_VAL = SPECIES_WEIGHT/SPECIES_NUMBER),
-              in_y_lab = 'Weight per fish (kg)')  +
-     facet_grid(TARGET_FISHERY_DESCRIPTION ~.)
-  )  
-plot_bx_wt_per_tgt_fshry
+# plot_bx_wt_per_tgt_fshry <-
+#   (fn_boxplot(in_df = dfs %>%
+#                 mutate(y_val = species_weight/species_number),
+#               in_y_lab = 'Weight per fish (kg)')  +
+#      facet_grid(target_fishery_description ~.)
+#   )  
+# plot_bx_wt_per_tgt_fshry
 
 # 5. Faceted by Management Program
-plot_bx_wt_per_mgmt_pgm <-
-  (fn_boxplot(in_df = df_spp_fshry_samples %>%
-                mutate(Y_VAL = SPECIES_WEIGHT/SPECIES_NUMBER),
-              in_y_lab = 'Weight per fish (kg)')  +
-     facet_grid(MANAGEMENT_PROGRAM_CODE ~.)
-  ) 
-plot_bx_wt_per_mgmt_pgm
+# plot_bx_wt_per_mgmt_pgm <-
+#   (fn_boxplot(in_df = dfs %>%
+#                 mutate(y_val = species_weight/species_number),
+#               in_y_lab = 'Weight per fish (kg)')  +
+#      facet_grid(management_program_code ~.)
+#   ) 
+# plot_bx_wt_per_mgmt_pgm
 
+# 6. Faceted by Month
+
+ggplot(data = df %>% 
+         filter(year >= 2016),
+       aes(x = as.factor(month),
+           y = species_weight/species_number)) +
+  geom_boxplot() +
+  labs(x     = '',
+       y     = 'Weight per fish (kg)',
+       title = in_species_name) +
+  facet_grid(~nmfs_area) +
+  theme_bw(base_size = 20) + 
+  theme(strip.text.y.right = element_text(angle = 0))
+
+ggsave(paste0("output/atka_avg_wt_by_month.png"),
+       width = 12, height = 6, units = "in", bg = 'white')
+
+
+library(ggthemes)
+ggplot(data = df %>% 
+         filter(year > 2016), # & month <= 5),
+       aes(x = as.factor(month),
+           y = species_weight/species_number,
+           col = factor(year),
+           fill = factor(year)) ) +
+  geom_boxplot(alpha = 0.25) +
+  labs(x     = '',
+       y     = 'Weight per fish (kg)',
+       title = in_species_name,
+       col   = 'Year', fill = 'Year') +
+  facet_grid(~nmfs_area) +
+  theme_bw(base_size = 20) + 
+  scale_color_colorblind() +
+  scale_fill_colorblind() +
+  theme(strip.text.y.right = element_text(angle = 0)) 
+ggsave(paste0("output/atka_spring_avg_wt_by_year.png"),
+       width = 15, height = 6, units = "in", bg = 'white')
+
+ggplot(data = df %>% 
+         filter(year > 2016 & nmfs_area == 541), # & month <= 5),
+       aes(x = as.factor(month),
+           y = species_weight/species_number,
+           col = factor(year),
+           fill = factor(year)) ) +
+  geom_boxplot(alpha = 0.3) +
+  labs(x     = 'Month',
+       y     = 'Weight per fish (kg)',
+       col   = 'Year', fill = 'Year') +
+  facet_grid(~nmfs_area) +
+  theme_bw(base_size = 20) + 
+  scale_color_colorblind() +
+  scale_fill_colorblind() +
+  theme(strip.text.y.right = element_text(angle = 0)) 
+ggsave(paste0("output/atka_spring_avg_wt_by_year_541.png"),
+       width = 7, height = 6, units = "in", bg = 'white')
